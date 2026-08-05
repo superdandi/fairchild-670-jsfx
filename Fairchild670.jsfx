@@ -959,38 +959,6 @@ file_var(13, tf_drive_out);
 file_var(14, slider12);
 
 // ============================================================
-// LOAD — Load Preset Values
-// ============================================================
-@load
-// Version check
-file_var(0, loaded_version);
-loaded_version >= PRESET_VERSION ? (
-  // Load all slider values
-  file_var(1, slider1);
-  file_var(2, slider2);
-  file_var(3, slider3);
-  file_var(4, slider4);
-  file_var(5, slider5);
-  file_var(6, slider6);
-  file_var(7, slider7);
-  file_var(8, slider8);
-  file_var(9, slider9);
-  file_var(10, slider10);
-  file_var(11, slider11);
-
-  // Load transformer drive settings
-  file_var(12, tf_drive_in);
-  file_var(13, tf_drive_out);
-
-  // Load preset
-  file_var(14, slider12);
-  current_preset = slider12;
-
-  // Trigger @slider to recalculate coefficients
-  sliderchange = 1;
-);
-
-// ============================================================
 // GRAPHICS — @gfx Section
 // ============================================================
 @gfx
