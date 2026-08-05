@@ -100,6 +100,7 @@ test_phase = 0;
 test_freq = 1000;  // Hz
 test_amp = 0.5;    // Normalized amplitude
 test_sr = 44100;   // Updated in @slider
+noise_seed = 12345; // Noise generator seed
 
 // Test modes
 TEST_OFF = 0;
@@ -125,7 +126,9 @@ function generate_test_signal() (
     test_phase >= TWO_PI ? test_phase -= TWO_PI;
     test_phase < $pi ? test_amp : -test_amp;
   ) : test_mode == TEST_NOISE ? (
-    random() * test_amp * 2 - test_amp;
+    // Simple pseudo-random noise (LCG)
+    noise_seed = (noise_seed * 1103515245 + 12345) & 0x7FFFFFFF;
+    (noise_seed / 0x7FFFFFFF) * test_amp * 2 - test_amp;
   ) : (
     0;
   );
