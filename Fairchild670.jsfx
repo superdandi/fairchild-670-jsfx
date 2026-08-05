@@ -1093,13 +1093,12 @@ function draw_knob(x, y, r, value, min_val, max_val, label) (
   gfx_setfont(2, "Arial", 9, '');
   gfx_x = x - 15; gfx_y = y + r + 5;
   _knob_str = #;
-  if (min_val == 0 && max_val == 100,
+  min_val == 0 && max_val == 100 ? (
     sprintf(_knob_str, "%.0f", value);
-    gfx_drawstr(_knob_str);
-  ,
+  ) : (
     sprintf(_knob_str, "%.1f", value);
-    gfx_drawstr(_knob_str);
   );
+  gfx_drawstr(_knob_str);
 
   // Label
   gfx_set(0.5, 0.5, 0.5);
