@@ -59,8 +59,8 @@ slider12:0<0,6,1{Default,Vinyl Mastering,Vocal,Drums,Mastering,Gentle,Aggressive
 TWO_PI = 2 * $pi;
 INV_PI = 1 / $pi;
 
-// Anti-denormal (optimized: use bit manipulation)
-TINY = 1e-18;
+// Anti-denormal
+TINY = 0.000000000000000001;
 
 // Version for serialization
 PRESET_VERSION = 1.0;
