@@ -373,6 +373,12 @@ function process_biquad(x) (
   y;
 );
 
+// --- tanh manual (EEL2 no tiene tanh) ---
+function my_tanh(x) (
+  _et = exp(2 * x);
+  (_et - 1) / (_et + 1);
+);
+
 // --- Transformer Soft Saturation ---
 // Modelo simplificado: tanh con soft knee
 // Los transformers de audio saturan suavemente a niveles altos
@@ -381,9 +387,9 @@ function transformer_saturation(x, drive) (
   abs_x > 0.001 ? (
     // Normalizar y aplicar saturación suave
     x_norm = x * drive;
-    y = tanh(x_norm);
+    y = my_tanh(x_norm);
     // Compensar ganancia para mantener nivel
-    y / (tanh(drive) + 0.0001);
+    y / (my_tanh(drive) + 0.0001);
   ) : (
     x
   );
@@ -515,7 +521,7 @@ function tube_saturation(x, drive) (
   // tanh produce armónicos impares (3ro, 5to, 7mo)
   // drive controla cuánta saturación
   x * drive > 1.5 ? (
-    tanh(x * drive) * 0.67;
+    my_tanh(x * drive) * 0.67;
   ) : (
     x * (1 + drive * 0.3); // Rango lineal con color sutil
   );
