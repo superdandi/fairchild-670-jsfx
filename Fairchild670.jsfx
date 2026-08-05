@@ -640,7 +640,7 @@ select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
   (release_fast_r = release_time_r; release_slow_r = release_time_r);
 
 // Calcular coefficients del envelope follower
-// (se ejecuta en @block porque $srate no está disponible en @slider)
+// (sr, test_sr, bq_sr se actualizan en @block con valor fijo 44100)
 
 // Blend speed
 BLEND_SPEED = 0.005;
@@ -911,10 +911,11 @@ spl1 -= TINY;
 // BLOCK — CPU Monitoring (runs once per audio block)
 // ============================================================
 @block
-// Update sample rate ($srate disponible en @block)
-sr = $srate;
-test_sr = $srate;
-bq_sr = $srate;
+// Sample rate: usar valor fijo (44100 Hz)
+// $srate no está disponible como variable legible en EEL2
+sr = 44100;
+test_sr = 44100;
+bq_sr = 44100;
 
 // Calcular coefficients del envelope follower
 attack_coeff_l = exp(-1 / (sr * attack_time_l));
