@@ -99,6 +99,7 @@ function fast_abs(x) (
 test_phase = 0;
 test_freq = 1000;  // Hz
 test_amp = 0.5;    // Normalized amplitude
+test_sr = 44100;   // Updated in @slider
 
 // Test modes
 TEST_OFF = 0;
@@ -116,11 +117,11 @@ valid_threshold_exceeded = 0;
 // Function: Generate test signal
 function generate_test_signal() (
   test_mode == TEST_SINE ? (
-    test_phase += TWO_PI * test_freq / $srate;
+    test_phase += TWO_PI * test_freq / test_sr;
     test_phase >= TWO_PI ? test_phase -= TWO_PI;
     sin(test_phase) * test_amp;
   ) : test_mode == TEST_SQUARE ? (
-    test_phase += TWO_PI * test_freq / $srate;
+    test_phase += TWO_PI * test_freq / test_sr;
     test_phase >= TWO_PI ? test_phase -= TWO_PI;
     test_phase < $pi ? test_amp : -test_amp;
   ) : test_mode == TEST_NOISE ? (
@@ -628,6 +629,7 @@ select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
 
 // Calcular coefficients del envelope follower
 sr = $srate;
+test_sr = $srate;
 
 attack_coeff_l = exp(-1 / (sr * attack_time_l));
 release_coeff_l = exp(-1 / (sr * release_time_l));
