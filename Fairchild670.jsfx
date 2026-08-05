@@ -676,7 +676,8 @@ test_mode != TEST_OFF ? (
 );
 
 bypass ? (
-  // Bypass: pass-through
+  // Bypass: pass-through (no-op)
+  0;
 ) : (
   // === INPUT TRANSFORMER ===
   // HPF ~30Hz (DC blocking)
