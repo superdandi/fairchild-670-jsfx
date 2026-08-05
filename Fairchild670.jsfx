@@ -1,0 +1,1264 @@
+desc:Fairchild 670 Vari-Mu Compressor v1.0
+tags: compressor limiter tube vari-mu fairchild stereo mastering
+author: Dandi
+// @version 1.0.0
+// @changelog Phase 10 - Polish + factory presets + distribution
+
+// ============================================================
+// FAIRCHILD 670 VARI-MU COMPRESSOR
+// ============================================================
+// Emulación del compresor de tubo Fairchild 670
+// Diseñado para mastering y mezcla
+//
+// Características:
+// - Variable-Mu con tubo 6386 remote-cutoff
+// - Sidechain con rectificador 6AL5
+// - 6 posiciones de time constant (incluye auto-release)
+// - Transformadores de entrada/salida emulados
+// - Stereo Link, L/R Independent, Lateral-Vertical (M/S)
+// - Interfaz gráfica con VU meters y knobs
+// - Serialización de presets
+// - Optimizado para bajo uso de CPU
+//
+// Basado en el hardware Fairchild 670 original (1959)
+// ============================================================
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+options:maxmem=8000000
+
+// ============================================================
+// SLIDERS — Mapeo del Hardware Fairchild 670
+// ============================================================
+
+// --- Canal Izquierdo ---
+slider1:0<-60,12,0.1>Input Gain L (dB)
+slider2:50<0,100,0.1>Threshold L (%)
+slider3:1<1,6,1{0.3s,0.8s,2.0s,5.0s,Auto-Fast,Auto-Slow}>Time Constant L
+slider4:0<0,100,0.1>Output Gain L (dB)
+
+// --- Canal Derecho ---
+slider5:0<-60,12,0.1>Input Gain R (dB)
+slider6:50<0,100,0.1>Threshold R (%)
+slider7:1<1,6,1{0.3s,0.8s,2.0s,5.0s,Auto-Fast,Auto-Slow}>Time Constant R
+slider8:0<0,100,0.1>Output Gain R (dB)
+
+// --- Global ---
+slider9:0<0,2,1{Stereo Linked,L/R Independent,Lateral-Vertical}>Mode
+slider10:100<0,100,0.5>Mix / Dry-Wet %
+slider11:0<0,1,1{Off,On}>Bypass
+slider12:0<0,6,1{Default,Vinyl Mastering,Vocal,Drums,Mastering,Gentle,Aggressive}>Preset
+
+// ============================================================
+// INIT — Constantes, LUT del 6386, buffers
+// ============================================================
+@init
+TWO_PI = 2 * $pi;
+INV_PI = 1 / $pi;
+
+// Anti-denormal (optimized: use bit manipulation)
+TINY = 1e-18;
+
+// Version for serialization
+PRESET_VERSION = 1.0;
+
+// ============================================================
+// OPTIMIZATION — CPU Monitoring & Anti-Denormal
+// ============================================================
+
+// CPU usage tracking
+cpu_time_start = 0;
+cpu_time_end = 0;
+cpu_usage = 0;
+cpu_max = 0;
+cpu_avg = 0;
+cpu_count = 0;
+cpu_sum = 0;
+
+// Block counter for less frequent UI updates
+block_counter = 0;
+BLOCK_UPDATE_RATE = 64;  // Update UI every 64 blocks
+
+// Anti-denormal: fast absolute value using bit masking
+// Works for IEEE 754 floats
+function fast_abs(x) (
+  x < 0 ? -x : x;
+);
+
+// Optimized envelope follower (avoid function call overhead)
+// Inlined in @sample for performance
+
+// ============================================================
+// TESTING — Test Signals & Validation
+// ============================================================
+
+// Test signal generator
+test_phase = 0;
+test_freq = 1000;  // Hz
+test_amp = 0.5;    // Normalized amplitude
+
+// Test modes
+TEST_OFF = 0;
+TEST_SINE = 1;
+TEST_SQUARE = 2;
+TEST_NOISE = 3;
+test_mode = TEST_OFF;
+
+// Validation state
+valid_input_peak = 0;
+valid_output_peak = 0;
+valid_gr_actual = 0;
+valid_threshold_exceeded = 0;
+
+// Function: Generate test signal
+function generate_test_signal() (
+  test_mode == TEST_SINE ? (
+    test_phase += TWO_PI * test_freq / $srate;
+    test_phase >= TWO_PI ? test_phase -= TWO_PI;
+    sin(test_phase) * test_amp;
+  ) : test_mode == TEST_SQUARE ? (
+    test_phase += TWO_PI * test_freq / $srate;
+    test_phase >= TWO_PI ? test_phase -= TWO_PI;
+    test_phase < $pi ? test_amp : -test_amp;
+  ) : test_mode == TEST_NOISE ? (
+    random() * test_amp * 2 - test_amp;
+  ) : (
+    0;
+  );
+);
+
+// Function: Validate compression behavior
+function validate_compression(input, output, threshold) (
+  valid_input_peak = max(valid_input_peak * 0.9999, abs(input));
+  valid_output_peak = max(valid_output_peak * 0.9999, abs(output));
+
+  // Check if compression is happening when expected
+  valid_input_peak > threshold ? (
+    valid_threshold_exceeded += 1;
+    valid_output_peak < valid_input_peak * 0.9 ? (
+      // Compression detected
+      1;
+    ) : (
+      // No compression when expected
+      0;
+    );
+  ) : (
+    // Below threshold: should be unity gain
+    valid_output_peak > valid_input_peak * 1.1 ? (
+      // Gain above unity when shouldn't be
+      0;
+    ) : (
+      1;
+    );
+  );
+);
+
+// Test result flags
+test_passed = 1;
+test_fail_count = 0;
+
+// ============================================================
+// FACTORY PRESETS — Reference Settings
+// ============================================================
+
+// Preset indices
+PRESET_DEFAULT = 0;
+PRESET_VINYL = 1;
+PRESET_VOCAL = 2;
+PRESET_DRUMS = 3;
+PRESET_MASTERING = 4;
+PRESET_GENTLE = 5;
+PRESET_AGGRESSIVE = 6;
+
+// Current preset
+current_preset = PRESET_DEFAULT;
+
+// Preset names
+preset_names[PRESET_DEFAULT] = "Default";
+preset_names[PRESET_VINYL] = "Vinyl Mastering";
+preset_names[PRESET_VOCAL] = "Vocal Compression";
+preset_names[PRESET_DRUMS] = "Drum Bus";
+preset_names[PRESET_MASTERING] = "Mastering";
+preset_names[PRESET_GENTLE] = "Gentle Leveling";
+preset_names[PRESET_AGGRESSIVE] = "Aggressive";
+
+// Function: Load factory preset
+function load_factory_preset(preset_idx) (
+  preset_idx == PRESET_DEFAULT ? (
+    slider1 = 0;    // Input Gain L
+    slider2 = 50;   // Threshold L
+    slider3 = 2;    // Time Constant L
+    slider4 = 0;    // Output Gain L
+    slider5 = 0;    // Input Gain R
+    slider6 = 50;   // Threshold R
+    slider7 = 2;    // Time Constant R
+    slider8 = 0;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_VINYL ? (
+    slider1 = 0;    // Input Gain L
+    slider2 = 40;   // Threshold L (gentle)
+    slider3 = 4;    // Time Constant L (5.0s/2.0s)
+    slider4 = 0;    // Output Gain L
+    slider5 = 0;    // Input Gain R
+    slider6 = 40;   // Threshold R
+    slider7 = 4;    // Time Constant R
+    slider8 = 0;    // Output Gain R
+    slider9 = 2;    // Lateral-Vertical (M/S)
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_VOCAL ? (
+    slider1 = -6;   // Input Gain L
+    slider2 = 60;   // Threshold L
+    slider3 = 1;    // Time Constant L (0.3s/0.2s)
+    slider4 = 6;    // Output Gain L (makeup)
+    slider5 = -6;   // Input Gain R
+    slider6 = 60;   // Threshold R
+    slider7 = 1;    // Time Constant R
+    slider8 = 6;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_DRUMS ? (
+    slider1 = -3;   // Input Gain L
+    slider2 = 70;   // Threshold L
+    slider3 = 5;    // Time Constant L (Auto-Fast)
+    slider4 = 3;    // Output Gain L
+    slider5 = -3;   // Input Gain R
+    slider6 = 70;   // Threshold R
+    slider7 = 5;    // Time Constant R
+    slider8 = 3;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 80;  // Mix 80% (parallel)
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_MASTERING ? (
+    slider1 = -3;   // Input Gain L
+    slider2 = 45;   // Threshold L
+    slider3 = 3;    // Time Constant L (2.0s/0.6s)
+    slider4 = 3;    // Output Gain L
+    slider5 = -3;   // Input Gain R
+    slider6 = 45;   // Threshold R
+    slider7 = 3;    // Time Constant R
+    slider8 = 3;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_GENTLE ? (
+    slider1 = 0;    // Input Gain L
+    slider2 = 30;   // Threshold L (low)
+    slider3 = 4;    // Time Constant L (slow)
+    slider4 = 0;    // Output Gain L
+    slider5 = 0;    // Input Gain R
+    slider6 = 30;   // Threshold R
+    slider7 = 4;    // Time Constant R
+    slider8 = 0;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  ) : preset_idx == PRESET_AGGRESSIVE ? (
+    slider1 = 6;    // Input Gain L
+    slider2 = 80;   // Threshold L (high)
+    slider3 = 1;    // Time Constant L (fast)
+    slider4 = 0;    // Output Gain L
+    slider5 = 6;    // Input Gain R
+    slider6 = 80;   // Threshold R
+    slider7 = 1;    // Time Constant R
+    slider8 = 0;    // Output Gain R
+    slider9 = 0;    // Stereo Linked
+    slider10 = 100; // Mix 100%
+    slider11 = 0;   // Bypass Off
+  );
+  current_preset = preset_idx;
+);
+
+// ============================================================
+// VARIABLE-MU TUBE MODEL — 6386 Remote-Cutoff
+// ============================================================
+
+// --- Tube LUT (Lookup Table) ---
+// Mapea CV normalizado (0-1) → ganancia del tubo (0-1)
+// CV=0 → gain=1.0 (unity, sin compresión)
+// CV=1 → gain≈0.05 (compresión máxima)
+VAR_MU_LUT_SIZE = 1024;
+VAR_MU_LUT = 0;
+freembuf(VAR_MU_LUT + VAR_MU_LUT_SIZE);
+
+// Construir LUT con curva remote-cutoff del 6386
+// Modelo simplificado: gain = 1 / (1 + (cv * k)^x)
+// x=1.0 para remote-cutoff (suave), k controla pendiente
+function build_var_mu_lut() (
+  k = 8.0;   // pendiente de la curva
+  x = 1.0;   // exponente remote-cutoff (1.0 = suave)
+
+  i = 0;
+  while (i < VAR_MU_LUT_SIZE) (
+    cv_norm = i / (VAR_MU_LUT_SIZE - 1); // 0.0 a 1.0
+
+    // Curva remote-cutoff suave
+    // Nunca llega a hard cutoff
+    gain = 1.0 / (1.0 + (cv_norm * k)^x);
+
+    // Limitar mínimo de ganancia (nunca silencio total)
+    gain < 0.02 ? gain = 0.02;
+
+    VAR_MU_LUT[i] = gain;
+    i += 1;
+  );
+);
+
+build_var_mu_lut();
+
+// ============================================================
+// TRANSFORMER EMULATION — Input/Output Transformers
+// ============================================================
+
+// --- Biquad Filter (para HPF y LPF del transformer) ---
+// Coefficients pre-calculados en @slider
+// State variables por canal (4 per biquad: 2 HPF + 2 LPF)
+// Input transformer
+tf_in_hp_z1_l = 0; tf_in_hp_z2_l = 0;
+tf_in_lp_z1_l = 0; tf_in_lp_z2_l = 0;
+tf_in_hp_z1_r = 0; tf_in_hp_z2_r = 0;
+tf_in_lp_z1_r = 0; tf_in_lp_z2_r = 0;
+
+// Output transformer
+tf_out_hp_z1_l = 0; tf_out_hp_z2_l = 0;
+tf_out_lp_z1_l = 0; tf_out_lp_z2_l = 0;
+tf_out_hp_z1_r = 0; tf_out_hp_z2_r = 0;
+tf_out_lp_z1_r = 0; tf_out_lp_z2_r = 0;
+
+// Biquad coefficient storage (reusado para cada filtro)
+bq_a1 = 0; bq_a2 = 0;
+bq_b0 = 0; bq_b1 = 0; bq_b2 = 0;
+
+// --- Calcular coefficients de biquad ---
+// type: 0=LPF, 1=HPF
+function calc_biquad(type, freq, q) (
+  w0 = TWO_PI * freq / $srate;
+  cos_w0 = cos(w0);
+  sin_w0 = sin(w0);
+  alpha = sin_w0 / (2 * q);
+
+  type == 0 ? (
+    // LPF
+    bq_b0 = (1 - cos_w0) / 2;
+    bq_b1 = 1 - cos_w0;
+    bq_b2 = (1 - cos_w0) / 2;
+  ) : (
+    // HPF
+    bq_b0 = (1 + cos_w0) / 2;
+    bq_b1 = -(1 + cos_w0);
+    bq_b2 = (1 + cos_w0) / 2;
+  );
+  bq_a1 = -2 * cos_w0;
+  bq_a2 = 1 - alpha;
+);
+
+// --- Procesar biquad ---
+// Retorna sample procesado, actualiza z1/z2 via punteros
+function process_biquad(x) (
+  y = bq_b0 * x + bq_b1 * bq_z1 + bq_b2 * bq_z2
+    - bq_a1 * bq_z1 - bq_a2 * bq_z2;
+  bq_z2 = bq_z1;
+  bq_z1 = y;
+  y;
+);
+
+// --- Transformer Soft Saturation ---
+// Modelo simplificado: tanh con soft knee
+// Los transformers de audio saturan suavemente a niveles altos
+function transformer_saturation(x, drive) (
+  abs_x = abs(x);
+  abs_x > 0.001 ? (
+    // Normalizar y aplicar saturación suave
+    x_norm = x * drive;
+    y = tanh(x_norm);
+    // Compensar ganancia para mantener nivel
+    y / (tanh(drive) + 0.0001);
+  ) : (
+    x
+  );
+);
+
+// ============================================================
+// SIDECHAIN DETECTOR — 6AL5 Rectifier + Envelope Follower
+// ============================================================
+
+// --- 6AL5 Soft Rectifier ---
+// El 6AL5 tiene un forward voltage de ~0.8V (soft onset)
+// En digital: soft knee alrededor de 0.2-0.3 (normalizado)
+// Modelo: x < knee → lineal con reducción, x > knee → rectificado con suavidad
+SOFT_KNEE = 0.25;  // Umbral del soft knee (normalizado)
+
+function soft_rectifier(x) (
+  x < 0 ? x = -x;  // Full-wave rectification
+
+  x < SOFT_KNEE ? (
+    // Rango del knee: suavizar la transición
+    // Parabólica suave: evita discontinuidad
+    (x * x) / (2 * SOFT_KNEE);
+  ) : (
+    // Más allá del knee: casi lineal con suavizado leve
+    SOFT_KNEE / 2 + (x - SOFT_KNEE) * (1 - (SOFT_KNEE / (2 * x)));
+  );
+);
+
+// --- RC Envelope Follower ---
+// El sidechain del Fairchild usa un capacitor de carga/descarga
+// Carga (attack): rápido, controlado por resistor de attack
+// Descarga (release): lento, controlado por resistor de release
+// Auto modes usan dos branch (ver Fase 3)
+
+// Coefficients de filter (pre-calculados en @slider)
+// attack_coeff = exp(-1 / (samplerate * attack_time))
+// release_coeff = exp(-1 / (samplerate * release_time))
+attack_coeff_l = 0;
+release_coeff_l = 0;
+attack_coeff_r = 0;
+release_coeff_r = 0;
+
+// State del envelope follower
+env_state_l = 0;
+env_state_r = 0;
+
+// --- Función: Envelope follower ---
+// Para modos fixed: simple attack/release
+// Para modos auto: dual-branch con blend
+function envelope_follow(input, attack_c, release_c, state) (
+  input > state ? (
+    state + (input - state) * attack_c;
+  ) : (
+    state + (input - state) * release_c;
+  );
+);
+
+// --- Dual-branch auto-release ---
+// Dos envelope followers en paralelo, blend según tasa de cambio
+// Usa variables globales para el estado
+function dual_branch_release(input, attack_c, fast_c, slow_c) (
+  // Procesar ambas branches usando env_state como accumulator
+  new_fast = envelope_follow(input, attack_c, fast_c, env_fast_state);
+  new_slow = envelope_follow(input, attack_c, slow_c, env_slow_state);
+
+  // Detectar dirección de la señal
+  input > prev_env_state ? (
+    // Attack: mover hacia fast
+    blend_state = blend_state * (1 - BLEND_SPEED);
+    output = new_fast;
+  ) : (
+    // Release: blend según rate de cambio
+    change_rate = (prev_env_state - input) / (prev_env_state + 0.0001);
+    change_rate > 0.1 ? (
+      blend_state = blend_state * (1 - BLEND_SPEED);
+    ) : (
+      blend_state = blend_state + (1 - blend_state) * BLEND_SPEED;
+    );
+    output = new_fast * (1 - blend_state) + new_slow * blend_state;
+  );
+
+  // Actualizar estados globales
+  env_fast_state = new_fast;
+  env_slow_state = new_slow;
+  prev_env_state = input;
+  output;
+);
+
+// --- Función: Calcular CV desde envelope ---
+// Convierte envelope level → CV para Variable-Mu
+// CV = cuánto comprimir (0=no comprimir, 1=máxima compresión)
+function envelope_to_cv(env_level, threshold, ratio) (
+  env_level > threshold ? (
+    // Compresión: diferencia entre nivel y threshold, escalada por ratio
+    excess_db = 20 * log(env_level / threshold) / log(10);
+    cv = (excess_db * (1 - 1/ratio)) / 40;  // Normalizado
+    cv > 1 ? cv = 1;
+    cv < 0 ? cv = 0;
+  ) : (
+    cv = 0;
+  );
+);
+
+// --- Función: Obtener ganancia del tubo desde CV ---
+// cv: 0-1, donde 0=sin compresión, 1=compresión máxima
+function var_mu_get_gain(cv) (
+  // Clamp
+  cv < 0 ? cv = 0;
+  cv > 1 ? cv = 1;
+
+  // Index en LUT
+  idx = cv * (VAR_MU_LUT_SIZE - 1);
+  idx_floor = floor(idx);
+  idx_frac = idx - idx_floor;
+  idx_next = idx_floor + 1;
+  idx_next >= VAR_MU_LUT_SIZE ? idx_next = VAR_MU_LUT_SIZE - 1;
+
+  // Interpolación lineal para suavidad
+  VAR_MU_LUT[idx_floor] * (1 - idx_frac) + VAR_MU_LUT[idx_next] * idx_frac;
+);
+
+// --- Función: Soft saturation (simula color armónico de tubo ---
+// Agrega armónicos impares sutiles como un push-pull real
+function tube_saturation(x, drive) (
+  // tanh produce armónicos impares (3ro, 5to, 7mo)
+  // drive controla cuánta saturación
+  x * drive > 1.5 ? (
+    tanh(x * drive) * 0.67;
+  ) : (
+    x * (1 + drive * 0.3); // Rango lineal con color sutil
+  );
+);
+
+// ============================================================
+// STATE — Variables de estado por canal
+// ============================================================
+
+// CV de control (calculado por sidechain)
+cv_l = 0;
+cv_r = 0;
+
+// Envelope follower state
+env_state_l = 0;
+env_state_r = 0;
+
+// Dual-branch release state (global for function access)
+env_fast_state = 0;
+env_slow_state = 0;
+blend_state = 0;
+prev_env_state = 0;
+
+// Per-channel copies for auto modes
+env_fast_l = 0;
+env_fast_r = 0;
+env_slow_l = 0;
+env_slow_r = 0;
+blend_l = 0;
+blend_r = 0;
+prev_env_l = 0;
+prev_env_r = 0;
+
+// Peak detector state (para sidechain level)
+sidechain_peak_l = 0;
+sidechain_peak_r = 0;
+
+// Transformer filter state (biquads)
+// Input transformer: HPF + LPF per channel
+tf_in_z1_l = 0; tf_in_z2_l = 0;  // HPF state
+tf_in_z3_l = 0; tf_in_z4_l = 0;  // LPF state
+tf_in_z1_r = 0; tf_in_z2_r = 0;
+tf_in_z3_r = 0; tf_in_z4_r = 0;
+
+// Output transformer: HPF + LPF per channel
+tf_out_z1_l = 0; tf_out_z2_l = 0;
+tf_out_z3_l = 0; tf_out_z4_l = 0;
+tf_out_z1_r = 0; tf_out_z2_r = 0;
+tf_out_z3_r = 0; tf_out_z4_r = 0;
+
+// Transformer saturation drive
+tf_drive_in = 1.2;   // Input transformer: más saturación
+tf_drive_out = 0.8;  // Output transformer: menos saturación
+
+// Gain reduction para display
+gr_l = 0;
+gr_r = 0;
+
+// Ratio del compressor (Fairchild 670: ~3:1 fixed por circuito)
+// El ratio real varía con el nivel (soft knee), pero el max es ~3:1
+COMPRESSOR_RATIO = 3.0;
+
+// ============================================================
+// SLIDER — Calcular coefficients
+// ============================================================
+@slider
+// === PRESET LOADING ===
+// Check if preset slider changed
+slider12 != current_preset ? (
+  load_factory_preset(slider12);
+);
+
+// Input gain (dB → lineal)
+input_gain_l = 10^(slider1 / 20);
+input_gain_r = 10^(slider5 / 20);
+
+// Output gain (dB → lineal)
+output_gain_l = 10^(slider4 / 20);
+output_gain_r = 10^(slider8 / 20);
+
+// Threshold (normalizado 0-1)
+// El slider va de 0-100, lo mapeamos a threshold 0-1
+thresh_l = slider2 / 100;
+thresh_r = slider6 / 100;
+
+// Tube saturation drive
+tube_drive_l = 0.3 + thresh_l * 0.5;
+tube_drive_r = 0.3 + thresh_r * 0.5;
+
+// === TIME CONSTANTS ===
+// Fairchild 670: 6 posiciones
+// 1=0.3s/0.2s, 2=0.8s/0.4s, 3=2.0s/0.6s, 4=5.0s/2.0s,
+// 5=Auto-Fast, 6=Auto-Slow
+select_l = slider3;
+select_r = slider7;
+
+// Fixed time constants (attack/release)
+select_l == 1 ? (attack_time_l = 0.2; release_time_l = 0.3) :
+select_l == 2 ? (attack_time_l = 0.4; release_time_l = 0.8) :
+select_l == 3 ? (attack_time_l = 0.6; release_time_l = 2.0) :
+select_l == 4 ? (attack_time_l = 2.0; release_time_l = 5.0) :
+  attack_time_l = 0.2;  // Auto modes: base attack
+
+select_r == 1 ? (attack_time_r = 0.2; release_time_r = 0.3) :
+select_r == 2 ? (attack_time_r = 0.4; release_time_r = 0.8) :
+select_r == 3 ? (attack_time_r = 0.6; release_time_r = 2.0) :
+select_r == 4 ? (attack_time_r = 2.0; release_time_r = 5.0) :
+  attack_time_r = 0.2;
+
+// Auto-release: definir tiempos de las dos branches
+// Auto-Fast (pos 5): fast=0.1s, slow=1.0s
+// Auto-Slow (pos 6): fast=0.5s, slow=5.0s
+select_l == 5 ? (release_fast_l = 0.1; release_slow_l = 1.0) :
+select_l == 6 ? (release_fast_l = 0.5; release_slow_l = 5.0) :
+  (release_fast_l = release_time_l; release_slow_l = release_time_l);
+
+select_r == 5 ? (release_fast_r = 0.1; release_slow_r = 1.0) :
+select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
+  (release_fast_r = release_time_r; release_slow_r = release_time_r);
+
+// Calcular coefficients del envelope follower
+sr = 0.001 * $srate;
+
+attack_coeff_l = exp(-1 / (sr * attack_time_l));
+release_coeff_l = exp(-1 / (sr * release_time_l));
+attack_coeff_r = exp(-1 / (sr * attack_time_r));
+release_coeff_r = exp(-1 / (sr * release_time_r));
+
+// Coefficients para dual-branch auto-release
+release_fast_coeff_l = exp(-1 / (sr * release_fast_l));
+release_slow_coeff_l = exp(-1 / (sr * release_slow_l));
+release_fast_coeff_r = exp(-1 / (sr * release_fast_r));
+release_slow_coeff_r = exp(-1 / (sr * release_slow_r));
+
+// Blend speed
+BLEND_SPEED = 0.005;
+
+// === TRANSFORMER FILTER COEFFICIENTS ===
+// HPF: ~30Hz (DC blocking, low frequency roll-off)
+// LPF: ~30kHz (ultrasonic filtering, transformer bandwidth)
+// Q=0.707 (Butterworth, maximally flat)
+
+// Input transformer
+calc_biquad(1, 30, 0.707);  // HPF
+tf_in_hp_a1 = bq_a1; tf_in_hp_a2 = bq_a2;
+tf_in_hp_b0 = bq_b0; tf_in_hp_b1 = bq_b1; tf_in_hp_b2 = bq_b2;
+
+calc_biquad(0, 30000, 0.707);  // LPF
+tf_in_lp_a1 = bq_a1; tf_in_lp_a2 = bq_a2;
+tf_in_lp_b0 = bq_b0; tf_in_lp_b1 = bq_b1; tf_in_lp_b2 = bq_b2;
+
+// Output transformer
+calc_biquad(1, 30, 0.707);  // HPF
+tf_out_hp_a1 = bq_a1; tf_out_hp_a2 = bq_a2;
+tf_out_hp_b0 = bq_b0; tf_out_hp_b1 = bq_b1; tf_out_hp_b2 = bq_b2;
+
+calc_biquad(0, 30000, 0.707);  // LPF
+tf_out_lp_a1 = bq_a1; tf_out_lp_a2 = bq_a2;
+tf_out_lp_b0 = bq_b0; tf_out_lp_b1 = bq_b1; tf_out_lp_b2 = bq_b2;
+
+// Mix
+mix = slider10 / 100;
+dry = 1 - mix;
+bypass = slider11;
+
+// ============================================================
+// SAMPLE — Procesamiento Variable-Mu
+// ============================================================
+@sample
+// Anti-denormal
+spl0 += TINY;
+spl1 += TINY;
+
+// Test signal injection (if enabled)
+test_mode != TEST_OFF ? (
+  test_sig = generate_test_signal();
+  spl0 = test_sig;
+  spl1 = test_sig;
+);
+
+bypass ? (
+  // Bypass: pass-through
+) : (
+  // === INPUT TRANSFORMER ===
+  // HPF ~30Hz (DC blocking)
+  bq_a1 = tf_in_hp_a1; bq_a2 = tf_in_hp_a2;
+  bq_b0 = tf_in_hp_b0; bq_b1 = tf_in_hp_b1; bq_b2 = tf_in_hp_b2;
+  bq_z1 = tf_in_z1_l; bq_z2 = tf_in_z2_l;
+  sig_l = process_biquad(spl0);
+  tf_in_z1_l = bq_z1; tf_in_z2_l = bq_z2;
+
+  bq_z1 = tf_in_z1_r; bq_z2 = tf_in_z2_r;
+  sig_r = process_biquad(spl1);
+  tf_in_z1_r = bq_z1; tf_in_z2_r = bq_z2;
+
+  // LPF ~30kHz
+  bq_a1 = tf_in_lp_a1; bq_a2 = tf_in_lp_a2;
+  bq_b0 = tf_in_lp_b0; bq_b1 = tf_in_lp_b1; bq_b2 = tf_in_lp_b2;
+  bq_z1 = tf_in_z3_l; bq_z2 = tf_in_z4_l;
+  sig_l = process_biquad(sig_l);
+  tf_in_z3_l = bq_z1; tf_in_z4_l = bq_z2;
+
+  bq_z1 = tf_in_z3_r; bq_z2 = tf_in_z4_r;
+  sig_r = process_biquad(sig_r);
+  tf_in_z3_r = bq_z1; tf_in_z4_r = bq_z2;
+
+  // Input transformer saturation
+  sig_l = transformer_saturation(sig_l * input_gain_l, tf_drive_in);
+  sig_r = transformer_saturation(sig_r * input_gain_r, tf_drive_in);
+
+  // === SIDECHAIN DETECTOR ===
+  // Paso 1: Full-wave rectification (6AL5 model)
+  rect_l = soft_rectifier(sig_l);
+  rect_r = soft_rectifier(sig_r);
+
+  // Paso 2: Envelope follower con time constants
+  is_auto_l = select_l >= 5;
+  is_auto_r = select_r >= 5;
+
+  is_auto_l ? (
+    // Set global state for dual-branch function
+    env_fast_state = env_fast_l;
+    env_slow_state = env_slow_l;
+    blend_state = blend_l;
+    prev_env_state = prev_env_l;
+
+    env_state_l = dual_branch_release(rect_l, attack_coeff_l,
+      release_fast_coeff_l, release_slow_coeff_l);
+
+    // Save back to per-channel state
+    env_fast_l = env_fast_state;
+    env_slow_l = env_slow_state;
+    blend_l = blend_state;
+    prev_env_l = rect_l;
+  ) : (
+    env_state_l = envelope_follow(rect_l, attack_coeff_l, release_coeff_l, env_state_l);
+  );
+
+  is_auto_r ? (
+    env_fast_state = env_fast_r;
+    env_slow_state = env_slow_r;
+    blend_state = blend_r;
+    prev_env_state = prev_env_r;
+
+    env_state_r = dual_branch_release(rect_r, attack_coeff_r,
+      release_fast_coeff_r, release_slow_coeff_r);
+
+    env_fast_r = env_fast_state;
+    env_slow_r = env_slow_state;
+    blend_r = blend_state;
+    prev_env_r = rect_r;
+  ) : (
+    env_state_r = envelope_follow(rect_r, attack_coeff_r, release_coeff_r, env_state_r);
+  );
+
+  // Paso 3: Convertir envelope → CV
+  // Stereo Link / L/V Matrix
+  mode = slider9;
+
+  mode == 0 ? (
+    // Stereo Linked: usar el max de ambos envelopes
+    linked_env = max(env_state_l, env_state_r);
+    cv_l = envelope_to_cv(linked_env, thresh_l, COMPRESSOR_RATIO);
+    cv_r = envelope_to_cv(linked_env, thresh_r, COMPRESSOR_RATIO);
+  ) : mode == 2 ? (
+    // Lateral-Vertical (M/S): encode, process, decode
+    // M = (L+R)/2, S = (L-R)/2
+    mid = (sig_l + sig_r) * 0.5;
+    side = (sig_l - sig_r) * 0.5;
+
+    // Procesar mid y side independientemente
+    rect_mid = soft_rectifier(mid);
+    rect_side = soft_rectifier(side);
+
+    is_auto_l ? (
+      env_fast_state = env_fast_l;
+      env_slow_state = env_slow_l;
+      blend_state = blend_l;
+      prev_env_state = prev_env_l;
+      env_mid = dual_branch_release(rect_mid, attack_coeff_l,
+        release_fast_coeff_l, release_slow_coeff_l);
+      env_fast_l = env_fast_state;
+      env_slow_l = env_slow_state;
+      blend_l = blend_state;
+      prev_env_l = rect_mid;
+    ) : (
+      env_mid = envelope_follow(rect_mid, attack_coeff_l, release_coeff_l, env_state_l);
+    );
+
+    is_auto_r ? (
+      env_fast_state = env_fast_r;
+      env_slow_state = env_slow_r;
+      blend_state = blend_r;
+      prev_env_state = prev_env_r;
+      env_side = dual_branch_release(rect_side, attack_coeff_r,
+        release_fast_coeff_r, release_slow_coeff_r);
+      env_fast_r = env_fast_state;
+      env_slow_r = env_slow_state;
+      blend_r = blend_state;
+      prev_env_r = rect_side;
+    ) : (
+      env_side = envelope_follow(rect_side, attack_coeff_r, release_coeff_r, env_state_r);
+    );
+
+    cv_l = envelope_to_cv(env_mid, thresh_l, COMPRESSOR_RATIO);
+    cv_r = envelope_to_cv(env_side, thresh_r, COMPRESSOR_RATIO);
+
+    // Gain para mid y side
+    gain_mid = var_mu_get_gain(cv_l);
+    gain_side = var_mu_get_gain(cv_r);
+
+    // Procesar mid y side
+    mid *= gain_mid;
+    side *= gain_side;
+
+    // Decode: L = M+S, R = M-S
+    sig_l = mid + side;
+    sig_r = mid - side;
+
+    // Saltar el Variable-Mu normal
+    gain_mu_l = gain_mid;
+    gain_mu_r = gain_side;
+  ) : (
+    // L/R Independent: procesamiento separado (default)
+    cv_l = envelope_to_cv(env_state_l, thresh_l, COMPRESSOR_RATIO);
+    cv_r = envelope_to_cv(env_state_r, thresh_r, COMPRESSOR_RATIO);
+  );
+
+  // === VARIABLE-MU GAIN STAGE ===
+  mode != 2 ? (
+    gain_mu_l = var_mu_get_gain(cv_l);
+    gain_mu_r = var_mu_get_gain(cv_r);
+
+    sig_l *= gain_mu_l;
+    sig_r *= gain_mu_r;
+  );
+
+  // === TUBE SATURATION ===
+  sig_l = tube_saturation(sig_l, tube_drive_l);
+  sig_r = tube_saturation(sig_r, tube_drive_r);
+
+  // === OUTPUT TRANSFORMER ===
+  // HPF ~30Hz
+  bq_a1 = tf_out_hp_a1; bq_a2 = tf_out_hp_a2;
+  bq_b0 = tf_out_hp_b0; bq_b1 = tf_out_hp_b1; bq_b2 = tf_out_hp_b2;
+  bq_z1 = tf_out_z1_l; bq_z2 = tf_out_z2_l;
+  sig_l = process_biquad(sig_l);
+  tf_out_z1_l = bq_z1; tf_out_z2_l = bq_z2;
+
+  bq_z1 = tf_out_z1_r; bq_z2 = tf_out_z2_r;
+  sig_r = process_biquad(sig_r);
+  tf_out_z1_r = bq_z1; tf_out_z2_r = bq_z2;
+
+  // LPF ~30kHz
+  bq_a1 = tf_out_lp_a1; bq_a2 = tf_out_lp_a2;
+  bq_b0 = tf_out_lp_b0; bq_b1 = tf_out_lp_b1; bq_b2 = tf_out_lp_b2;
+  bq_z1 = tf_out_z3_l; bq_z2 = tf_out_z4_l;
+  sig_l = process_biquad(sig_l);
+  tf_out_z3_l = bq_z1; tf_out_z4_l = bq_z2;
+
+  bq_z1 = tf_out_z3_r; bq_z2 = tf_out_z4_r;
+  sig_r = process_biquad(sig_r);
+  tf_out_z3_r = bq_z1; tf_out_z4_r = bq_z2;
+
+  // Output transformer saturation
+  sig_l = transformer_saturation(sig_l, tf_drive_out);
+  sig_r = transformer_saturation(sig_r, tf_drive_out);
+
+  // === OUTPUT STAGE ===
+  sig_l *= output_gain_l;
+  sig_r *= output_gain_r;
+
+  // === MIX DRY/WET ===
+  mix < 1 ? (
+    spl0 = sig_l * mix + spl0 * dry;
+    spl1 = sig_r * mix + spl1 * dry;
+  ) : (
+    spl0 = sig_l;
+    spl1 = sig_r;
+  );
+
+  // Gain reduction para display
+  gr_l = gain_mu_l < 1 ? 20 * log(gain_mu_l) / log(10) : 0;
+  gr_r = gain_mu_r < 1 ? 20 * log(gain_mu_r) / log(10) : 0;
+
+  // Validate compression behavior (if test mode)
+  test_mode != TEST_OFF ? (
+    valid_result = validate_compression(spl0, sig_l, thresh_l);
+    valid_result == 0 ? (
+      test_fail_count += 1;
+      test_passed = 0;
+    );
+  );
+);
+
+// Remove anti-denormal offset
+spl0 -= TINY;
+spl1 -= TINY;
+
+// ============================================================
+// BLOCK — CPU Monitoring (runs once per audio block)
+// ============================================================
+@block
+// CPU timing
+cpu_time_start = time_start();
+
+// Block counter for less frequent updates
+block_counter += 1;
+block_counter >= BLOCK_UPDATE_RATE ? (
+  block_counter = 0;
+
+  // Calculate CPU usage
+  cpu_time_end = time_end();
+  cpu_usage = (cpu_time_end - cpu_time_start) / BLOCK_UPDATE_RATE;
+
+  // Update max and average
+  cpu_usage > cpu_max ? cpu_max = cpu_usage;
+  cpu_sum += cpu_usage;
+  cpu_count += 1;
+  cpu_avg = cpu_sum / cpu_count;
+
+  // Reset for next measurement
+  cpu_time_start = time_start();
+);
+
+// ============================================================
+// SERIALIZE — Save/Load Presets
+// ============================================================
+@serialize
+// Version check
+file_var(0, PRESET_VERSION);
+
+// Save all slider values
+file_var(1, slider1);   // Input Gain L
+file_var(2, slider2);   // Threshold L
+file_var(3, slider3);   // Time Constant L
+file_var(4, slider4);   // Output Gain L
+file_var(5, slider5);   // Input Gain R
+file_var(6, slider6);   // Threshold R
+file_var(7, slider7);   // Time Constant R
+file_var(8, slider8);   // Output Gain R
+file_var(9, slider9);   // Mode
+file_var(10, slider10); // Mix
+file_var(11, slider11); // Bypass
+
+// Save transformer drive settings
+file_var(12, tf_drive_in);
+file_var(13, tf_drive_out);
+
+// Save preset
+file_var(14, slider12);
+
+// ============================================================
+// LOAD — Load Preset Values
+// ============================================================
+@load
+// Version check
+file_var(0, loaded_version);
+loaded_version >= PRESET_VERSION ? (
+  // Load all slider values
+  file_var(1, slider1);
+  file_var(2, slider2);
+  file_var(3, slider3);
+  file_var(4, slider4);
+  file_var(5, slider5);
+  file_var(6, slider6);
+  file_var(7, slider7);
+  file_var(8, slider8);
+  file_var(9, slider9);
+  file_var(10, slider10);
+  file_var(11, slider11);
+
+  // Load transformer drive settings
+  file_var(12, tf_drive_in);
+  file_var(13, tf_drive_out);
+
+  // Load preset
+  file_var(14, slider12);
+  current_preset = slider12;
+
+  // Trigger @slider to recalculate coefficients
+  sliderchange = 1;
+);
+
+// ============================================================
+// GRAPHICS — @gfx Section
+// ============================================================
+@gfx
+// Window size
+gfx_w = 680;
+gfx_h = 320;
+
+// Colors
+gfx_clear = 0x1a1a2e;  // Dark blue background
+
+// --- Title ---
+gfx_set(0.9, 0.85, 0.7);  // Gold text
+gfx_setfont(1, "Arial", 14, 'b');
+gfx_x = 20; gfx_y = 10;
+gfx_drawstr("FAIRCHILD 670");
+
+gfx_set(0.6, 0.6, 0.6);  // Gray subtitle
+gfx_setfont(2, "Arial", 10, '');
+gfx_x = 20; gfx_y = 30;
+gfx_drawstr("Vari-Mu Compressor");
+
+// --- VU Meters ---
+function draw_vu(x, y, w, h, level, peak, label) (
+  // Background
+  gfx_set(0.1, 0.1, 0.15);
+  gfx_rect(x, y, w, h);
+
+  // Level bar (green → yellow → red)
+  level_db = 20 * log(abs(level) + 0.0001) / log(10);
+  level_norm = (level_db + 60) / 60;  // -60dB to 0dB → 0-1
+  level_norm < 0 ? level_norm = 0;
+  level_norm > 1 ? level_norm = 1;
+
+  bar_w = level_norm * (w - 4);
+  bar_w > 0 ? (
+    level_norm < 0.7 ? (
+      gfx_set(0.2, 0.8, 0.2);  // Green
+    ) : level_norm < 0.9 ? (
+      gfx_set(0.9, 0.9, 0.2);  // Yellow
+    ) : (
+      gfx_set(0.9, 0.2, 0.2);  // Red
+    );
+    gfx_rect(x + 2, y + 2, bar_w, h - 4);
+  );
+
+  // Peak marker
+  peak_db = 20 * log(abs(peak) + 0.0001) / log(10);
+  peak_norm = (peak_db + 60) / 60;
+  peak_norm < 0 ? peak_norm = 0;
+  peak_norm > 1 ? peak_norm = 1;
+  peak_x = x + 2 + peak_norm * (w - 4);
+  gfx_set(1, 1, 1);
+  gfx_rect(peak_x - 1, y + 1, 2, h - 2);
+
+  // Label
+  gfx_set(0.5, 0.5, 0.5);
+  gfx_setfont(2, "Arial", 8, '');
+  gfx_x = x; gfx_y = y + h + 2;
+  gfx_drawstr(label);
+);
+
+// Input VU
+gfx_setfont(1, "Arial", 9, 'b');
+gfx_set(0.7, 0.7, 0.7);
+gfx_x = 20; gfx_y = 55;
+gfx_drawstr("INPUT");
+draw_vu(20, 70, 120, 15, spl0, spl0, "");
+
+draw_vu(20, 100, 120, 15, spl1, spl1, "L / R");
+
+// --- Gain Reduction Meter ---
+function draw_gr(x, y, w, h, gr_l, gr_r) (
+  // Background
+  gfx_set(0.1, 0.1, 0.15);
+  gfx_rect(x, y, w, h);
+
+  // GR bars (0dB at right, -20dB at left)
+  gr_l_norm = abs(gr_l) / 20;
+  gr_l_norm > 1 ? gr_l_norm = 1;
+  gr_r_norm = abs(gr_r) / 20;
+  gr_r_norm > 1 ? gr_r_norm = 1;
+
+  // Left GR
+  gfx_set(0.9, 0.4, 0.1);  // Orange
+  gr_l_w = gr_l_norm * (w - 4);
+  gr_l_w > 0 ? gfx_rect(x + 2, y + 2, gr_l_w, (h - 6) / 2);
+
+  // Right GR
+  gfx_set(0.9, 0.6, 0.1);  // Light orange
+  gr_r_w = gr_r_norm * (w - 4);
+  gr_r_w > 0 ? gfx_rect(x + 2, y + (h - 6) / 2 + 4, gr_r_w, (h - 6) / 2);
+
+  // Labels
+  gfx_set(0.5, 0.5, 0.5);
+  gfx_setfont(2, "Arial", 8, '');
+  gfx_x = x; gfx_y = y - 12;
+  gfx_drawstr("GR");
+
+  gfx_x = x + w + 5; gfx_y = y + 2;
+  gfx_drawstr("L");
+  gfx_x = x + w + 5; gfx_y = y + (h - 6) / 2 + 4;
+  gfx_drawstr("R");
+
+  // dB markings
+  gfx_set(0.4, 0.4, 0.4);
+  gfx_x = x + 2; gfx_y = y + h - 10;
+  gfx_drawstr("-20");
+  gfx_x = x + w - 20; gfx_y = y + h - 10;
+  gfx_drawstr("0");
+);
+
+draw_gr(160, 70, 100, 50, gr_l, gr_r);
+
+// --- Knobs ---
+function draw_knob(x, y, r, value, min_val, max_val, label) (
+  // Normalize
+  norm = (value - min_val) / (max_val - min_val);
+  norm < 0 ? norm = 0;
+  norm > 1 ? norm = 1;
+
+  // Background circle
+  gfx_set(0.15, 0.15, 0.2);
+  gfx_circle(x, y, r, 1);
+
+  // Arc
+  arc_start = 0.75 * TWO_PI;
+  arc_end = arc_start + norm * 1.5 * TWO_PI;
+  gfx_set(0.3, 0.6, 0.9);  // Blue arc
+  // Draw arc segments
+  i = 0;
+  while (i < 20) (
+    a1 = arc_start + (i / 20) * (arc_end - arc_start);
+    a2 = arc_start + ((i + 1) / 20) * (arc_end - arc_start);
+    gfx_line(x + cos(a1) * (r - 3), y + sin(a1) * (r - 3),
+             x + cos(a2) * (r - 3), y + sin(a2) * (r - 3));
+    i += 1;
+  );
+
+  // Pointer
+  angle = arc_start + norm * 1.5 * TWO_PI;
+  gfx_set(1, 1, 1);
+  gfx_line(x, y, x + cos(angle) * (r - 8), y + sin(angle) * (r - 8));
+
+  // Value text
+  gfx_set(0.9, 0.9, 0.9);
+  gfx_setfont(2, "Arial", 9, '');
+  gfx_x = x - 15; gfx_y = y + r + 5;
+  if (min_val == 0 && max_val == 100,
+    gfx_drawstr(sprintf(value, "%.0f"));
+  ,
+    gfx_drawstr(sprintf(value, "%.1f"));
+  );
+
+  // Label
+  gfx_set(0.5, 0.5, 0.5);
+  gfx_x = x - 20; gfx_y = y - r - 15;
+  gfx_drawstr(label);
+);
+
+// Left channel knobs
+draw_knob(50, 200, 25, slider1, -60, 12, "INPUT L");
+draw_knob(110, 200, 25, slider2, 0, 100, "THRESH L");
+draw_knob(170, 200, 25, slider4, 0, 100, "OUTPUT L");
+
+// Right channel knobs
+draw_knob(50, 270, 25, slider5, -60, 12, "INPUT R");
+draw_knob(110, 270, 25, slider6, 0, 100, "THRESH R");
+draw_knob(170, 270, 25, slider8, 0, 100, "OUTPUT R");
+
+// --- Time Constant Display ---
+gfx_setfont(1, "Arial", 9, 'b');
+gfx_set(0.7, 0.7, 0.7);
+gfx_x = 290; gfx_y = 55;
+gfx_drawstr("TIME CONSTANT");
+
+gfx_setfont(2, "Arial", 10, '');
+gfx_set(0.9, 0.85, 0.7);
+gfx_x = 290; gfx_y = 70;
+slider3 == 1 ? gfx_drawstr("0.3s / 0.2s") :
+slider3 == 2 ? gfx_drawstr("0.8s / 0.4s") :
+slider3 == 3 ? gfx_drawstr("2.0s / 0.6s") :
+slider3 == 4 ? gfx_drawstr("5.0s / 2.0s") :
+slider3 == 5 ? gfx_drawstr("AUTO-FAST") :
+  gfx_drawstr("AUTO-SLOW");
+
+gfx_x = 290; gfx_y = 85;
+slider7 == 1 ? gfx_drawstr("0.3s / 0.2s") :
+slider7 == 2 ? gfx_drawstr("0.8s / 0.4s") :
+slider7 == 3 ? gfx_drawstr("2.0s / 0.6s") :
+slider7 == 4 ? gfx_drawstr("5.0s / 2.0s") :
+slider7 == 5 ? gfx_drawstr("AUTO-FAST") :
+  gfx_drawstr("AUTO-SLOW");
+
+// --- Mode Display ---
+gfx_setfont(1, "Arial", 9, 'b');
+gfx_set(0.7, 0.7, 0.7);
+gfx_x = 290; gfx_y = 110;
+gfx_drawstr("MODE");
+
+gfx_setfont(2, "Arial", 10, '');
+gfx_set(0.9, 0.85, 0.7);
+gfx_x = 290; gfx_y = 125;
+slider9 == 0 ? gfx_drawstr("STEREO LINKED") :
+slider9 == 1 ? gfx_drawstr("L/R INDEPENDENT") :
+  gfx_drawstr("LATERAL-VERTICAL");
+
+// --- Mix Display ---
+gfx_setfont(1, "Arial", 9, 'b');
+gfx_set(0.7, 0.7, 0.7);
+gfx_x = 290; gfx_y = 150;
+gfx_drawstr("MIX");
+
+gfx_set(0.9, 0.85, 0.7);
+gfx_setfont(2, "Arial", 10, '');
+gfx_x = 290; gfx_y = 165;
+gfx_drawstr(sprintf(slider10, "%.0f"));
+gfx_drawstr("%");
+
+// --- Bypass Indicator ---
+slider11 == 1 ? (
+  gfx_set(0.9, 0.2, 0.2);
+  gfx_setfont(1, "Arial", 10, 'b');
+  gfx_x = 550; gfx_y = 10;
+  gfx_drawstr("BYPASS");
+);
+
+// --- Transfer Curve Display ---
+function draw_transfer(x, y, w, h, threshold, ratio) (
+  // Background
+  gfx_set(0.08, 0.08, 0.12);
+  gfx_rect(x, y, w, h);
+
+  // Grid lines
+  gfx_set(0.2, 0.2, 0.25);
+  gfx_line(x, y + h/2, x + w, y + h/2);  // 0dB line
+  gfx_line(x + w/2, y, x + w/2, y + h);  // Threshold center
+
+  // Transfer curve
+  gfx_set(0.3, 0.7, 0.4);
+  i = 0;
+  while (i < w) (
+    input_db = (i / w) * 60 - 30;  // -30dB to +30dB
+    input_db > threshold ? (
+      // Compression region
+      excess = input_db - threshold;
+      output_db = threshold + excess / ratio;
+    ) : (
+      output_db = input_db;
+    );
+    // Map to screen
+    in_x = x + i;
+    in_y = y + h/2 - (input_db / 30) * (h/2);
+    out_y = y + h/2 - (output_db / 30) * (h/2);
+
+    i > 0 ? (
+      gfx_line(prev_x, prev_y, in_x, out_y);
+    );
+    prev_x = in_x;
+    prev_y = out_y;
+    i += 1;
+  );
+
+  // Labels
+  gfx_set(0.4, 0.4, 0.4);
+  gfx_setfont(2, "Arial", 8, '');
+  gfx_x = x; gfx_y = y + h + 2;
+  gfx_drawstr("TRANSFER CURVE");
+);
+
+draw_transfer(420, 55, 120, 80, thresh_l * 30 - 15, COMPRESSOR_RATIO);

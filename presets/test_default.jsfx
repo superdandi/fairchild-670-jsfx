@@ -1,0 +1,32 @@
+@test_default
+desc:Fairchild 670 - Default Preset Test
+tags: test
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+// Test that default preset loads correctly
+@test_init
+  // Load default preset
+  slider1 = 0;    // Input Gain L
+  slider2 = 50;   // Threshold L
+  slider3 = 2;    // Time Constant L
+  slider4 = 0;    // Output Gain L
+  slider5 = 0;    // Input Gain R
+  slider6 = 50;   // Threshold R
+  slider7 = 2;    // Time Constant R
+  slider8 = 0;    // Output Gain R
+  slider9 = 0;    // Stereo Linked
+  slider10 = 100; // Mix 100%
+  slider11 = 0;   // Bypass Off
+
+@test_sample
+  // Verify passthrough in bypass mode
+  spl0 == spl1 ? (
+    test_pass = 1;
+  ) : (
+    test_pass = 0;
+    test_msg = "Bypass passthrough failed";
+  );

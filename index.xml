@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<index version="1">
+  <category name="Fairchild 670 Vari-Mu Compressor">
+    <entry name="Fairchild670" type="effect">
+      <name>Fairchild 670 Vari-Mu Compressor</name>
+      <author>Dandi</author>
+      <author_url>https://github.com/yourusername</author_url>
+      <download_url>https://github.com/yourusername/fairchild-670-jsfx/raw/main/Fairchild670.jsfx</download_url>
+      <version>1.0.0</version>
+      <changelog>
+        - Initial release with all core features
+        - Variable-Mu with 6386 remote-cutoff tube model
+        - 6AL5 soft rectifier sidechain
+        - Dual-branch auto-release
+        - Transformer emulation
+        - Stereo Link / L/R Independent / Lateral-Vertical
+        - Graphics interface with VU meters
+        - Factory presets
+      </changelog>
+      <description>
+        Emulation of the legendary Fairchild 670 tube compressor.
+        Features Variable-Mu gain stage, authentic sidechain,
+        transformer emulation, and stereo processing modes.
+      </description>
+      <category>Compressor/Limiter</category>
+      <api_version>7</api_version>
+    </entry>
+  </category>
+</index>
