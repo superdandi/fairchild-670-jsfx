@@ -1,8 +1,8 @@
-desc:Fairchild 670 Vari-Mu Compressor v1.0
+desc:Fairchild 670 Vari-Mu Compressor v1.0.1
 tags: compressor limiter tube vari-mu fairchild stereo mastering
 author: Dandi
-// @version 1.0.0
-// @changelog Phase 10 - Polish + factory presets + distribution
+// @version 1.0.1
+// @changelog Fixed: threshold dB mapping, sr calculation, envelope_to_cv
 
 // ============================================================
 // FAIRCHILD 670 VARI-MU COMPRESSOR
@@ -470,13 +470,17 @@ function dual_branch_release(input, attack_c, fast_c, slow_c) (
 // --- Función: Calcular CV desde envelope ---
 // Convierte envelope level → CV para Variable-Mu
 // CV = cuánto comprimir (0=no comprimir, 1=máxima compresión)
-function envelope_to_cv(env_level, threshold, ratio) (
-  env_level > threshold ? (
-    // Compresión: diferencia entre nivel y threshold, escalada por ratio
-    excess_db = 20 * log(env_level / threshold) / log(10);
-    cv = (excess_db * (1 - 1/ratio)) / 40;  // Normalizado
-    cv > 1 ? cv = 1;
-    cv < 0 ? cv = 0;
+// Usa escala dB: threshold_db en dB, envelope en lineal
+function envelope_to_cv(env_level, threshold_db) (
+  env_level > 0.0001 ? (
+    env_db = 20 * log(env_level) / log(10);
+    env_db > threshold_db ? (
+      cv = (env_db - threshold_db) / 30;  // 30dB range → 0-1
+      cv > 1 ? cv = 1;
+      cv < 0 ? cv = 0;
+    ) : (
+      cv = 0;
+    );
   ) : (
     cv = 0;
   );
@@ -565,10 +569,6 @@ tf_drive_out = 0.8;  // Output transformer: menos saturación
 gr_l = 0;
 gr_r = 0;
 
-// Ratio del compressor (Fairchild 670: ~3:1 fixed por circuito)
-// El ratio real varía con el nivel (soft knee), pero el max es ~3:1
-COMPRESSOR_RATIO = 3.0;
-
 // ============================================================
 // SLIDER — Calcular coefficients
 // ============================================================
@@ -587,10 +587,9 @@ input_gain_r = 10^(slider5 / 20);
 output_gain_l = 10^(slider4 / 20);
 output_gain_r = 10^(slider8 / 20);
 
-// Threshold (normalizado 0-1)
-// El slider va de 0-100, lo mapeamos a threshold 0-1
-thresh_l = slider2 / 100;
-thresh_r = slider6 / 100;
+// Threshold (escala dB: slider 0-100 → -60dB a 0dB)
+thresh_l = -60 + slider2 * 0.6;
+thresh_r = -60 + slider6 * 0.6;
 
 // Tube saturation drive
 tube_drive_l = 0.3 + thresh_l * 0.5;
@@ -628,7 +627,7 @@ select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
   (release_fast_r = release_time_r; release_slow_r = release_time_r);
 
 // Calcular coefficients del envelope follower
-sr = 0.001 * $srate;
+sr = $srate;
 
 attack_coeff_l = exp(-1 / (sr * attack_time_l));
 release_coeff_l = exp(-1 / (sr * release_time_l));
@@ -769,8 +768,8 @@ bypass ? (
   mode == 0 ? (
     // Stereo Linked: usar el max de ambos envelopes
     linked_env = max(env_state_l, env_state_r);
-    cv_l = envelope_to_cv(linked_env, thresh_l, COMPRESSOR_RATIO);
-    cv_r = envelope_to_cv(linked_env, thresh_r, COMPRESSOR_RATIO);
+    cv_l = envelope_to_cv(linked_env, thresh_l);
+    cv_r = envelope_to_cv(linked_env, thresh_r);
   ) : mode == 2 ? (
     // Lateral-Vertical (M/S): encode, process, decode
     // M = (L+R)/2, S = (L-R)/2
@@ -811,8 +810,8 @@ bypass ? (
       env_side = envelope_follow(rect_side, attack_coeff_r, release_coeff_r, env_state_r);
     );
 
-    cv_l = envelope_to_cv(env_mid, thresh_l, COMPRESSOR_RATIO);
-    cv_r = envelope_to_cv(env_side, thresh_r, COMPRESSOR_RATIO);
+    cv_l = envelope_to_cv(env_mid, thresh_l);
+    cv_r = envelope_to_cv(env_side, thresh_r);
 
     // Gain para mid y side
     gain_mid = var_mu_get_gain(cv_l);
@@ -831,8 +830,8 @@ bypass ? (
     gain_mu_r = gain_side;
   ) : (
     // L/R Independent: procesamiento separado (default)
-    cv_l = envelope_to_cv(env_state_l, thresh_l, COMPRESSOR_RATIO);
-    cv_r = envelope_to_cv(env_state_r, thresh_r, COMPRESSOR_RATIO);
+    cv_l = envelope_to_cv(env_state_l, thresh_l);
+    cv_r = envelope_to_cv(env_state_r, thresh_r);
   );
 
   // === VARIABLE-MU GAIN STAGE ===
@@ -1261,4 +1260,4 @@ function draw_transfer(x, y, w, h, threshold, ratio) (
   gfx_drawstr("TRANSFER CURVE");
 );
 
-draw_transfer(420, 55, 120, 80, thresh_l * 30 - 15, COMPRESSOR_RATIO);
+draw_transfer(420, 55, 120, 80, thresh_l, 3.0);
