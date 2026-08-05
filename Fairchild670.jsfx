@@ -341,8 +341,9 @@ bq_b0 = 0; bq_b1 = 0; bq_b2 = 0;
 
 // --- Calcular coefficients de biquad ---
 // type: 0=LPF, 1=HPF
+// usa variable global bq_sr (seteada en @slider)
 function calc_biquad(type, freq, q) (
-  w0 = TWO_PI * freq / $srate;
+  w0 = TWO_PI * freq / bq_sr;
   cos_w0 = cos(w0);
   sin_w0 = sin(w0);
   alpha = sin_w0 / (2 * q);
@@ -477,7 +478,7 @@ function dual_branch_release(input, attack_c, fast_c, slow_c) (
 // Usa escala dB: threshold_db en dB, envelope en lineal
 function envelope_to_cv(env_level, threshold_db) (
   env_level > 0.0001 ? (
-    env_db = 20 * log(env_level) / log(10);
+    env_db = 20 * log10(env_level);
     env_db > threshold_db ? (
       cv = (env_db - threshold_db) / 30;  // 30dB range → 0-1
       cv > 1 ? cv = 1;
@@ -633,6 +634,7 @@ select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
 // Calcular coefficients del envelope follower
 sr = $srate;
 test_sr = $srate;
+bq_sr = $srate;
 
 attack_coeff_l = exp(-1 / (sr * attack_time_l));
 release_coeff_l = exp(-1 / (sr * release_time_l));
@@ -893,8 +895,8 @@ bypass ? (
   );
 
   // Gain reduction para display
-  gr_l = gain_mu_l < 1 ? 20 * log(gain_mu_l) / log(10) : 0;
-  gr_r = gain_mu_r < 1 ? 20 * log(gain_mu_r) / log(10) : 0;
+  gr_l = gain_mu_l < 1 ? 20 * log10(gain_mu_l) : 0;
+  gr_r = gain_mu_r < 1 ? 20 * log10(gain_mu_r) : 0;
 
   // Validate compression behavior (if test mode)
   test_mode != TEST_OFF ? (
@@ -992,7 +994,7 @@ function draw_vu(x, y, w, h, level, peak, label) (
   gfx_rect(x, y, w, h);
 
   // Level bar (green → yellow → red)
-  level_db = 20 * log(abs(level) + 0.0001) / log(10);
+  level_db = 20 * log10(abs(level) + 0.0001);
   level_norm = (level_db + 60) / 60;  // -60dB to 0dB → 0-1
   level_norm < 0 ? level_norm = 0;
   level_norm > 1 ? level_norm = 1;
@@ -1010,7 +1012,7 @@ function draw_vu(x, y, w, h, level, peak, label) (
   );
 
   // Peak marker
-  peak_db = 20 * log(abs(peak) + 0.0001) / log(10);
+  peak_db = 20 * log10(abs(peak) + 0.0001);
   peak_norm = (peak_db + 60) / 60;
   peak_norm < 0 ? peak_norm = 0;
   peak_norm > 1 ? peak_norm = 1;
@@ -1086,7 +1088,7 @@ function draw_knob(x, y, r, value, min_val, max_val, label) (
 
   // Background circle
   gfx_set(0.15, 0.15, 0.2);
-  gfx_circle(x, y, r, 1);
+  gfx_circle(x, y, r, 1, 1);
 
   // Arc
   arc_start = 0.75 * TWO_PI;
@@ -1111,10 +1113,13 @@ function draw_knob(x, y, r, value, min_val, max_val, label) (
   gfx_set(0.9, 0.9, 0.9);
   gfx_setfont(2, "Arial", 9, '');
   gfx_x = x - 15; gfx_y = y + r + 5;
+  _knob_str = #;
   if (min_val == 0 && max_val == 100,
-    gfx_drawstr(sprintf(value, "%.0f"));
+    sprintf(_knob_str, "%.0f", value);
+    gfx_drawstr(_knob_str);
   ,
-    gfx_drawstr(sprintf(value, "%.1f"));
+    sprintf(_knob_str, "%.1f", value);
+    gfx_drawstr(_knob_str);
   );
 
   // Label
@@ -1179,7 +1184,9 @@ gfx_drawstr("MIX");
 gfx_set(0.9, 0.85, 0.7);
 gfx_setfont(2, "Arial", 10, '');
 gfx_x = 290; gfx_y = 165;
-gfx_drawstr(sprintf(slider10, "%.0f"));
+_mix_str = #;
+sprintf(_mix_str, "%.0f", slider10);
+gfx_drawstr(_mix_str);
 gfx_drawstr("%");
 
 // --- Bypass Indicator ---
