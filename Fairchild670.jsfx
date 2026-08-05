@@ -66,21 +66,8 @@ TINY = 0.000000000000000001;
 PRESET_VERSION = 1.0;
 
 // ============================================================
-// OPTIMIZATION — CPU Monitoring & Anti-Denormal
+// OPTIMIZATION — Anti-Denormal
 // ============================================================
-
-// CPU usage tracking
-cpu_time_start = 0;
-cpu_time_end = 0;
-cpu_usage = 0;
-cpu_max = 0;
-cpu_avg = 0;
-cpu_count = 0;
-cpu_sum = 0;
-
-// Block counter for less frequent UI updates
-block_counter = 0;
-BLOCK_UPDATE_RATE = 64;  // Update UI every 64 blocks
 
 // Anti-denormal: fast absolute value using bit masking
 // Works for IEEE 754 floats
@@ -928,28 +915,6 @@ release_fast_coeff_l = exp(-1 / (sr * release_fast_l));
 release_slow_coeff_l = exp(-1 / (sr * release_slow_l));
 release_fast_coeff_r = exp(-1 / (sr * release_fast_r));
 release_slow_coeff_r = exp(-1 / (sr * release_slow_r));
-
-// CPU timing
-cpu_time_start = time_start();
-
-// Block counter for less frequent updates
-block_counter += 1;
-block_counter >= BLOCK_UPDATE_RATE ? (
-  block_counter = 0;
-
-  // Calculate CPU usage
-  cpu_time_end = time_end();
-  cpu_usage = (cpu_time_end - cpu_time_start) / BLOCK_UPDATE_RATE;
-
-  // Update max and average
-  cpu_usage > cpu_max ? cpu_max = cpu_usage;
-  cpu_sum += cpu_usage;
-  cpu_count += 1;
-  cpu_avg = cpu_sum / cpu_count;
-
-  // Reset for next measurement
-  cpu_time_start = time_start();
-);
 
 // ============================================================
 // SERIALIZE — Save/Load Presets
