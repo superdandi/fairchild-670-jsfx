@@ -99,7 +99,9 @@ function fast_abs(x) (
 test_phase = 0;
 test_freq = 1000;  // Hz
 test_amp = 0.5;    // Normalized amplitude
-test_sr = 44100;   // Updated in @slider
+test_sr = 44100;   // Updated in @block
+sr = 44100;        // Updated in @block
+bq_sr = 44100;     // Updated in @block
 noise_seed = 12345; // Noise generator seed
 
 // Test modes
@@ -618,13 +620,13 @@ select_l == 1 ? (attack_time_l = 0.2; release_time_l = 0.3) :
 select_l == 2 ? (attack_time_l = 0.4; release_time_l = 0.8) :
 select_l == 3 ? (attack_time_l = 0.6; release_time_l = 2.0) :
 select_l == 4 ? (attack_time_l = 2.0; release_time_l = 5.0) :
-  attack_time_l = 0.2;  // Auto modes: base attack
+  (attack_time_l = 0.2; release_time_l = 0.2);
 
 select_r == 1 ? (attack_time_r = 0.2; release_time_r = 0.3) :
 select_r == 2 ? (attack_time_r = 0.4; release_time_r = 0.8) :
 select_r == 3 ? (attack_time_r = 0.6; release_time_r = 2.0) :
 select_r == 4 ? (attack_time_r = 2.0; release_time_r = 5.0) :
-  attack_time_r = 0.2;
+  (attack_time_r = 0.2; release_time_r = 0.2);
 
 // Auto-release: definir tiempos de las dos branches
 // Auto-Fast (pos 5): fast=0.1s, slow=1.0s
@@ -638,20 +640,7 @@ select_r == 6 ? (release_fast_r = 0.5; release_slow_r = 5.0) :
   (release_fast_r = release_time_r; release_slow_r = release_time_r);
 
 // Calcular coefficients del envelope follower
-sr = $srate;
-test_sr = $srate;
-bq_sr = $srate;
-
-attack_coeff_l = exp(-1 / (sr * attack_time_l));
-release_coeff_l = exp(-1 / (sr * release_time_l));
-attack_coeff_r = exp(-1 / (sr * attack_time_r));
-release_coeff_r = exp(-1 / (sr * release_time_r));
-
-// Coefficients para dual-branch auto-release
-release_fast_coeff_l = exp(-1 / (sr * release_fast_l));
-release_slow_coeff_l = exp(-1 / (sr * release_slow_l));
-release_fast_coeff_r = exp(-1 / (sr * release_fast_r));
-release_slow_coeff_r = exp(-1 / (sr * release_slow_r));
+// (se ejecuta en @block porque $srate no está disponible en @slider)
 
 // Blend speed
 BLEND_SPEED = 0.005;
@@ -922,6 +911,23 @@ spl1 -= TINY;
 // BLOCK — CPU Monitoring (runs once per audio block)
 // ============================================================
 @block
+// Update sample rate ($srate disponible en @block)
+sr = $srate;
+test_sr = $srate;
+bq_sr = $srate;
+
+// Calcular coefficients del envelope follower
+attack_coeff_l = exp(-1 / (sr * attack_time_l));
+release_coeff_l = exp(-1 / (sr * release_time_l));
+attack_coeff_r = exp(-1 / (sr * attack_time_r));
+release_coeff_r = exp(-1 / (sr * release_time_r));
+
+// Coefficients para dual-branch auto-release
+release_fast_coeff_l = exp(-1 / (sr * release_fast_l));
+release_slow_coeff_l = exp(-1 / (sr * release_slow_l));
+release_fast_coeff_r = exp(-1 / (sr * release_fast_r));
+release_slow_coeff_r = exp(-1 / (sr * release_slow_r));
+
 // CPU timing
 cpu_time_start = time_start();
 
