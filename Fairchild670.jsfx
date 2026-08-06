@@ -365,9 +365,12 @@ function process_biquad(x) (
 );
 
 // --- tanh manual (EEL2 no tiene tanh) ---
+// Versión numéricamente estable: nunca desborda a inf
+// usa exp(-2|x|) (=>0, no desborda) y luego restaura el signo
 function my_tanh(x) (
-  _et = exp(2 * x);
-  (_et - 1) / (_et + 1);
+  _et = exp(-2 * abs(x));
+  _t = (1 - _et) / (1 + _et);
+  x < 0 ? -_t : _t;
 );
 
 // --- Transformer Soft Saturation ---
@@ -636,15 +639,20 @@ BLEND_SPEED = 0.005;
 
 // === TRANSFORMER FILTER COEFFICIENTS ===
 // HPF: ~30Hz (DC blocking, low frequency roll-off)
-// LPF: ~30kHz (ultrasonic filtering, transformer bandwidth)
+// LPF: ~15kHz (transformer bandwidth, SIEMPRE bajo Nyquist)
 // Q=0.707 (Butterworth, maximally flat)
+//
+// IMPORTANTE: El LPF NO puede exceder Nyquist (sr/2).
+// A 44100 Hz, Nyquist = 22050 Hz. Un LPF a 30000 Hz generaba
+// un biquad inestable (|a2|>1) → auto-oscilación → buzz/hiss.
+// 15000 Hz es seguro para 44.1k y 48k.
 
 // Input transformer
 calc_biquad(1, 30, 0.707);  // HPF
 tf_in_hp_a1 = bq_a1; tf_in_hp_a2 = bq_a2;
 tf_in_hp_b0 = bq_b0; tf_in_hp_b1 = bq_b1; tf_in_hp_b2 = bq_b2;
 
-calc_biquad(0, 30000, 0.707);  // LPF
+calc_biquad(0, 15000, 0.707);  // LPF
 tf_in_lp_a1 = bq_a1; tf_in_lp_a2 = bq_a2;
 tf_in_lp_b0 = bq_b0; tf_in_lp_b1 = bq_b1; tf_in_lp_b2 = bq_b2;
 
@@ -653,7 +661,7 @@ calc_biquad(1, 30, 0.707);  // HPF
 tf_out_hp_a1 = bq_a1; tf_out_hp_a2 = bq_a2;
 tf_out_hp_b0 = bq_b0; tf_out_hp_b1 = bq_b1; tf_out_hp_b2 = bq_b2;
 
-calc_biquad(0, 30000, 0.707);  // LPF
+calc_biquad(0, 15000, 0.707);  // LPF
 tf_out_lp_a1 = bq_a1; tf_out_lp_a2 = bq_a2;
 tf_out_lp_b0 = bq_b0; tf_out_lp_b1 = bq_b1; tf_out_lp_b2 = bq_b2;
 
