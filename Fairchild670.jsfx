@@ -339,17 +339,19 @@ function calc_biquad(type, freq, q) (
 
   type == 0 ? (
     // LPF
-    bq_b0 = (1 - cos_w0) / 2;
-    bq_b1 = 1 - cos_w0;
-    bq_b2 = (1 - cos_w0) / 2;
+    a0 = 1 + alpha;
+    bq_b0 = ((1 - cos_w0) / 2) / a0;
+    bq_b1 = (1 - cos_w0) / a0;
+    bq_b2 = ((1 - cos_w0) / 2) / a0;
   ) : (
     // HPF
-    bq_b0 = (1 + cos_w0) / 2;
-    bq_b1 = -(1 + cos_w0);
-    bq_b2 = (1 + cos_w0) / 2;
+    a0 = 1 + alpha;
+    bq_b0 = ((1 + cos_w0) / 2) / a0;
+    bq_b1 = -(1 + cos_w0) / a0;
+    bq_b2 = ((1 + cos_w0) / 2) / a0;
   );
-  bq_a1 = -2 * cos_w0;
-  bq_a2 = 1 - alpha;
+  bq_a1 = (-2 * cos_w0) / a0;
+  bq_a2 = (1 - alpha) / a0;
 );
 
 // --- Procesar biquad ---
